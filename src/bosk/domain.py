@@ -46,7 +46,7 @@ class FiniteDomain(ScalarDomain):
     def decode(self, values: ArrayLike) -> ArrayLike:
         raise NotImplementedError
 
-    def measure_encoder(self, from_domain: Optional[FiniteDomain] = None):
+    def measure_encoder(self, from_domain: Optional[FiniteDomain] = None, as_mask: bool = False):
         '''Returns object that can be used to encode a decoded measure.
 
         The measure should be over the cannonical domain (i.e., decoded) 
@@ -108,13 +108,21 @@ class FiniteIntRange(FiniteDomain):
     def decode(self, values):
         return values + self.start
 
-    def measure_encoder(self, from_domain: Optional[FiniteIntRange] = None):
+    def measure_encoder(self, from_domain: Optional[FiniteIntRange] = None, as_mask: bool = False):
         if from_domain is None:
+            if as_mask:
+                mask = np.zeros(self.decoded_cardinality, dtype=np.bool_)
+                mask[self.start:self.stop] = 1
+                return mask
             return slice(self.start, self.stop)
 
         offset = from_domain.start
         assert self.start >= offset
         assert self.stop <= from_domain.stop
+        if as_mask:
+            mask = np.zeros(self.decoded_cardinality, dtype=np.bool_)
+            mask[self.start - offset:self.stop - offset] = 1
+            return mask
         return slice(self.start - offset, self.stop - offset)
 
     def decode_measure(self, measure: ArrayLike, max: Optional[int] = None):
@@ -198,7 +206,7 @@ class FiniteIntSet(FiniteDomain):
     def decode(self, values):
         return self._decoder[np.asarray(values)]
 
-    def measure_encoder(self, from_domain: Optional[FiniteIntSet] = None):
+    def measure_encoder(self, from_domain: Optional[FiniteIntSet] = None, as_mask: bool = False):
         if from_domain is None:
             return self._support_mask
 
@@ -276,6 +284,10 @@ class ProductDomain(Domain):
         return np.array([d.decoded_cardinality for d in self.domains])
 
     @property
+    def ordered(self):
+        return np.array([d.ordered for d in self.domains])
+
+    @property
     def log_cardinality(self):
         return np.sum(np.log(self.cardinalities))
 
@@ -289,7 +301,7 @@ class ProductDomain(Domain):
     def decode(self, values: ArrayLike):
         return np.stack([d.decode(v) for d, v in zip(self.domains, values.T)], -1)
 
-    def measure_encoder(self, from_domain: Optional[ProductDomain] = None):
+    def measure_encoder(self, from_domain: Optional[ProductDomain] = None, as_mask: bool = False):
         '''Returns object that can be used to encode a decoded measure.
 
         The measure should be over the cannonical domain (i.e., decoded) 
@@ -297,8 +309,12 @@ class ProductDomain(Domain):
 
         '''
         if from_domain is None:
-            return tuple(d.measure_encoder() for d in self.domains)
-        return tuple(d.measure_encoder(from_d) for d, from_d in zip(self.domains, from_domain.domains))
+            encoder = tuple(d.measure_encoder(as_mask=as_mask)
+                            for d in self.domains)
+        else:
+            encoder = tuple(d.measure_encoder(from_domain=from_d, as_mask=as_mask)
+                            for d, from_d in zip(self.domains, from_domain.domains))
+        return np.concatenate(encoder) if as_mask else encoder
 
     def encode_measure(
         self, measure: ArrayLike,
